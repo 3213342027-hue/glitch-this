@@ -370,6 +370,218 @@ class ImageGlitcher:
         shutil.rmtree(self.gif_dirpath)
         return glitched_imgs, duration / i, i
 
+    def glitch_multi_images(self, src_imgs: List[Union[str, Image.Image]], glitch_amount: Union[int, float],
+                           seed: Optional[Union[int, float]] = None, glitch_change: Union[int, float] = 0.0,
+                           color_offset: bool = False, scan_lines: bool = False, cycle: bool = False,
+                           frames_per_image: int = 10) -> List[Image.Image]:
+        """
+         Glitch multiple images and combine them into a GIF sequence
+         Returns a list of PngImage objects ready to be saved as GIF
+
+         PARAMETERS:-
+
+         src_imgs: List of image paths or Image objects
+
+         glitch_amount: Level of glitch intensity, [0.1, 10.0] (inclusive)
+
+         glitch_change: Increment/Decrement in glitch_amount after every glitch
+
+         cycle: Whether or not to cycle glitch_amount back to glitch_min or glitch_max
+                if it over/underflows
+
+         color_offset: Specify True if color_offset effect should be applied
+
+         scan_lines: Specify True if scan_lines effect should be applied
+
+         frames_per_image: Number of glitched frames to generate per source image
+
+         seed: Set a random seed for generating similar images across runs,
+               defaults to None (random seed).
+        """
+
+        # Sanity checking the inputs
+        if not src_imgs:
+            raise ValueError('src_imgs list cannot be empty')
+        if not ((isinstance(glitch_amount, float)
+                 or isinstance(glitch_amount, int))
+                and self.glitch_min <= glitch_amount <= self.glitch_max):
+            raise ValueError('glitch_amount parameter must be a positive number '
+                             f'in range {self.glitch_min} to {self.glitch_max}, inclusive')
+        if not ((isinstance(glitch_change, float)
+                 or isinstance(glitch_change, int))
+                and -self.glitch_max <= glitch_change <= self.glitch_max):
+            raise ValueError(
+                f'glitch_change parameter must be a number between {-self.glitch_max} and {self.glitch_max}, inclusive')
+        if seed and not (isinstance(seed, float) or isinstance(seed, int)):
+            raise ValueError('seed parameter must be a number')
+        if not (frames_per_image > 0 and isinstance(frames_per_image, int)):
+            raise ValueError('frames_per_image must be a positive integer value greater than 0')
+
+        self.seed = seed
+        if self.seed:
+            self.__reset_rng_seed()
+
+        # Set up directory for storing glitched images
+        if os.path.isdir(self.gif_dirpath):
+            shutil.rmtree(self.gif_dirpath)
+        os.mkdir(self.gif_dirpath)
+
+        # Set up decimal precision for glitch_change
+        original_prec = getcontext().prec
+        getcontext().prec = 4
+
+        glitched_imgs = []
+        for img_path in src_imgs:
+            # Get Image for each source
+            try:
+                img = self.__fetch_image(img_path, gif_allowed=False)
+            except FileNotFoundError:
+                raise FileNotFoundError(f'No image found at given path: {img_path}')
+            except:
+                raise Exception(f'File format not supported for: {img_path}')
+
+            # Resize all images to the same size (first image's size)
+            if img_path == src_imgs[0]:
+                target_size = img.size
+            if img.size != target_size:
+                img = img.resize(target_size, Image.Resampling.LANCZOS)
+
+            # Fetching image attributes
+            self.pixel_tuple_len = len(img.getbands())
+            self.img_width, self.img_height = img.size
+            self.img_mode = img.mode
+
+            # Assigning the 3D arrays with pixel data
+            self.inputarr = np.asarray(img)
+            self.outputarr = np.array(img)
+
+            # Generate glitched frames for this image
+            for i in range(frames_per_image):
+                glitched_img = self.__get_glitched_img(glitch_amount, color_offset, scan_lines)
+                file_path = os.path.join(self.gif_dirpath, f'glitched_frame_{i}.png')
+                glitched_img.save(file_path, compress_level=3)
+                with Image.open(file_path) as temp_img:
+                    glitched_imgs.append(temp_img.copy())
+
+                # Change glitch_amount by given value
+                glitch_amount = self.__change_glitch(glitch_amount, glitch_change, cycle)
+
+
+        # Set decimal precision back to original value
+        getcontext().prec = original_prec
+        # Cleanup
+        shutil.rmtree(self.gif_dirpath)
+        return glitched_imgs
+
+    def glitch_transition(self, src_imgs: List[Union[str, Image.Image]], glitch_amount_start: float = 0.1,
+                         glitch_amount_end: float = 10.0, glitch_change: float = 0.5,
+                         color_offset: bool = True, scan_lines: bool = True,
+                         frames_per_transition: int = 50, transition_frames: int = 10,
+                         hold_frames: int = 15) -> List[Image.Image]:
+        """
+         Creates glitch transitions between multiple images
+         Each image starts clean, glitches intensify, then transitions to next image
+         Returns a list of PngImage objects ready to be saved as GIF
+
+         PARAMETERS:-
+
+         src_imgs: List of image paths or Image objects (minimum 2)
+
+         glitch_amount_start: Starting glitch intensity for each transition
+
+         glitch_amount_end: Maximum glitch intensity before transition
+
+         glitch_change: How much to increase glitch per frame
+
+         color_offset: Apply color offset effect
+
+         scan_lines: Apply scan lines effect
+
+         frames_per_transition: Frames to glitch from start to end intensity
+
+         transition_frames: Frames at max intensity before transition
+
+         hold_frames: Frames to hold clean image at the start
+        """
+
+        if len(src_imgs) < 2:
+            raise ValueError('At least 2 images required for transition')
+
+        # Set up directory for storing glitched images
+        import gc
+        gc.collect()
+        if os.path.isdir(self.gif_dirpath):
+            try:
+                shutil.rmtree(self.gif_dirpath)
+            except PermissionError:
+                pass
+        os.mkdir(self.gif_dirpath)
+
+        glitched_imgs = []
+
+
+
+
+        for img_idx, img_path in enumerate(src_imgs):
+            # Load and resize image (allow GIF input, will take first frame)
+            img = self.__fetch_image(img_path, gif_allowed=True)
+            # If it's a GIF, extract the first frame
+            if self.__isgif(img):
+                img = next(ImageSequence.Iterator(img))
+            # Convert to RGB/RGBA for glitching
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            elif img.mode not in ('RGB', 'RGBA'):
+                img = img.convert('RGB')
+            if img_idx == 0:
+                target_size = img.size
+            img = img.resize(target_size, Image.Resampling.LANCZOS)
+
+            # Set up image attributes
+            self.pixel_tuple_len = len(img.getbands())
+            self.img_width, self.img_height = img.size
+            self.img_mode = img.mode
+            self.inputarr = np.asarray(img)
+            self.outputarr = np.array(img)
+            self.seed = None  # Initialize seed for __get_glitched_img
+
+            # Phase 1: Hold clean image
+            for _ in range(hold_frames):
+                glitched_imgs.append(img.copy())
+
+            # Phase 2: Glitch intensity increases
+            current_glitch = glitch_amount_start
+            frame_idx = 0
+            for _ in range(frames_per_transition):
+                glitched_img = self.__get_glitched_img(current_glitch, color_offset, scan_lines)
+                file_path = os.path.join(self.gif_dirpath, f'glitched_frame_{img_idx}_{frame_idx}.png')
+                glitched_img.save(file_path, compress_level=3)
+                with Image.open(file_path) as temp_img:
+                    glitched_imgs.append(temp_img.copy())
+                current_glitch = min(current_glitch + glitch_change, glitch_amount_end)
+                frame_idx += 1
+
+            # Phase 3: Transition - rapid glitch bursts then settle on next image
+            for i in range(transition_frames):
+                if i < transition_frames // 2:
+                    # High intensity glitch during transition
+                    glitched_img = self.__get_glitched_img(glitch_amount_end, color_offset, scan_lines)
+                else:
+                    # Settle down, start showing next image characteristics
+                    glitched_img = self.__get_glitched_img(glitch_amount_end * 0.5, color_offset, scan_lines)
+                file_path = os.path.join(self.gif_dirpath, f'glitched_frame_{img_idx}_trans_{i}.png')
+                glitched_img.save(file_path, compress_level=3)
+                with Image.open(file_path) as temp_img:
+                    glitched_imgs.append(temp_img.copy())
+
+        # Cleanup - add gc to release file handles on Windows
+        gc.collect()
+        try:
+            shutil.rmtree(self.gif_dirpath)
+        except PermissionError:
+            pass  # Ignore cleanup errors on Windows
+        return glitched_imgs
+
     def __change_glitch(self, glitch_amount: Union[int, float], glitch_change: Union[int, float], cycle: bool) -> float:
         # A function to change glitch_amount by given increment/decrement
         glitch_amount = float(Decimal(glitch_amount) + Decimal(glitch_change))
